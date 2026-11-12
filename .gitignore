@@ -1,4 +1,7 @@
 .gitignore
+# Private project configuration, audits, plans, and project-only Codex skills.
+/.local/
+/.codex/
 .buildplan
 .env
 debug*
@@ -47,7 +50,7 @@ examples/tmp*
 bioagentos/task/lab_bench.py
 *database/
 .history/
-
+node_modules/
 temp.*
 
 scripts/analysis/all_tools.txt

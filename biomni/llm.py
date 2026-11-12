@@ -18,6 +18,7 @@ def get_llm(
     base_url: str | None = None,
     api_key: str | None = None,
     config: Optional["BiomniConfig"] = None,
+    protocol: str | None = None,
 ) -> BaseChatModel:
     """
     Get a language model instance based on the specified model name and source.
@@ -35,7 +36,7 @@ def get_llm(
     # Use config values for any unspecified parameters
     if config is not None:
         if model is None:
-            model = config.llm_model
+            model = config.llm
         if temperature is None:
             temperature = config.temperature
         if source is None:
@@ -44,6 +45,15 @@ def get_llm(
             base_url = config.base_url
         if api_key is None:
             api_key = config.api_key or "EMPTY"
+        if protocol is None:
+            protocol = config.protocol
+
+    if protocol is not None:
+        if protocol not in {"chat_completions", "responses"} or not base_url or not model:
+            raise ValueError("Explicit compatible protocol requires a base URL and model")
+        from biomni.model.compatible import CompatibleChatModel
+        return CompatibleChatModel(base_url=base_url, model=model, api_key=api_key or "",
+                                   protocol=protocol, temperature=temperature if temperature is not None else 0.7)
 
     # Use defaults if still not specified
     if model is None:

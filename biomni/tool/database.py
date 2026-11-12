@@ -51,7 +51,8 @@ def _query_llm_for_api(prompt, schema, system_template):
     """
     # Use global config for model and api_key
     try:
-        from biomni.config import default_config
+        from biomni.config import effective_config
+        default_config = effective_config()
 
         model = default_config.llm
         api_key = default_config.api_key
@@ -69,7 +70,8 @@ def _query_llm_for_api(prompt, schema, system_template):
 
         # Get LLM instance using the unified interface with config
         try:
-            from biomni.config import default_config
+            from biomni.config import effective_config
+            default_config = effective_config()
 
             llm = get_llm(model=model, temperature=0.0, api_key=api_key, config=default_config)
         except ImportError:

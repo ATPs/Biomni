@@ -39,7 +39,14 @@ def run_r_code(code: str) -> str:
             temp_file = f.name
 
         # Run the R code using Rscript
-        result = subprocess.run(["Rscript", temp_file], capture_output=True, text=True, check=False)
+        from biomni.config import effective_config
+        config = effective_config()
+        env = os.environ.copy()
+        if config.r_library_paths:
+            env["R_LIBS_USER"] = os.pathsep.join(config.r_library_paths)
+            env["R_LIBS_SITE"] = os.pathsep.join(config.r_library_paths)
+        result = subprocess.run([config.rscript_path, "--vanilla", temp_file], env=env,
+                                capture_output=True, text=True, check=False)
 
         # Clean up the temporary file
         os.unlink(temp_file)
@@ -205,7 +212,9 @@ def run_with_timeout(func, args=None, kwargs=None, timeout=600):
             result_queue.put(("error", str(e)))
 
     # Start a separate thread
-    thread = threading.Thread(target=thread_func, args=(func, args, kwargs, result_queue))
+    from contextvars import copy_context
+    context = copy_context()
+    thread = threading.Thread(target=context.run, args=(thread_func, func, args, kwargs, result_queue))
     thread.daemon = True  # Set as daemon so it will be killed when main thread exits
     thread.start()
 

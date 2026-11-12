@@ -2,7 +2,6 @@ import contextlib
 import re
 
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
 
 
 class ToolRetriever:
@@ -90,6 +89,7 @@ IMPORTANT GUIDELINES:
 
         # Use the provided LLM or create a new one
         if llm is None:
+            from langchain_openai import ChatOpenAI
             llm = ChatOpenAI(model="gpt-4o")
 
         # Invoke the LLM

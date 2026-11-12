@@ -6,7 +6,11 @@ Maintains full backward compatibility with existing code.
 """
 
 import os
-from dataclasses import dataclass
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from functools import wraps
+import inspect
 
 
 @dataclass
@@ -44,13 +48,16 @@ class BiomniConfig:
 
     # Custom model settings (for custom LLM serving)
     base_url: str | None = None
-    api_key: str | None = None  # Only for custom models, not provider API keys
+    api_key: str | None = field(default=None, repr=False)
+    protocol: str | None = None
+    rscript_path: str = "Rscript"
+    r_library_paths: tuple[str, ...] = ()
 
     # LLM source (auto-detected if None)
     source: str | None = None
 
     # Third-party integrations
-    protocols_io_access_token: str | None = None
+    protocols_io_access_token: str | None = field(default=None, repr=False)
 
     def __post_init__(self):
         """Load any environment variable overrides if they exist."""
@@ -74,13 +81,26 @@ class BiomniConfig:
             self.api_key = os.getenv("BIOMNI_CUSTOM_API_KEY")
         if os.getenv("BIOMNI_SOURCE"):
             self.source = os.getenv("BIOMNI_SOURCE")
+        if os.getenv("BIOMNI_API_PROTOCOL"):
+            self.protocol = os.getenv("BIOMNI_API_PROTOCOL")
+        if self.protocol not in {None, "chat_completions", "responses"}:
+            raise ValueError("Unsupported API protocol")
 
         # Protocols.io access token (prefer specific env vars)
         env_token = os.getenv("PROTOCOLS_IO_ACCESS_TOKEN") or os.getenv("BIOMNI_PROTOCOLS_IO_ACCESS_TOKEN")
         if env_token:
             self.protocols_io_access_token = env_token
 
-    def to_dict(self) -> dict:
+    @property
+    def llm_model(self):
+        """Compatibility alias for callers using the older attribute name."""
+        return self.llm
+
+    @llm_model.setter
+    def llm_model(self, value):
+        self.llm = value
+
+    def to_dict(self, *, include_secrets=False) -> dict:
         """Convert config to dictionary for easy access."""
         return {
             "path": self.path,
@@ -90,10 +110,40 @@ class BiomniConfig:
             "use_tool_retriever": self.use_tool_retriever,
             "commercial_mode": self.commercial_mode,
             "base_url": self.base_url,
-            "api_key": self.api_key,
+            "api_key": self.api_key if include_secrets else ("[REDACTED]" if self.api_key else None),
             "source": self.source,
+            "protocol": self.protocol,
         }
 
 
 # Global default config instance (optional, for convenience)
 default_config = BiomniConfig()
+_task_config = ContextVar("biomni_task_config", default=None)
+
+
+def effective_config():
+    return _task_config.get() or default_config
+
+
+@contextmanager
+def config_context(config):
+    token = _task_config.set(config)
+    try:
+        yield config
+    finally:
+        _task_config.reset(token)
+
+
+def task_configured(function):
+    """Keep database calls in the invoking agent's context, including streams."""
+    if inspect.isgeneratorfunction(function):
+        @wraps(function)
+        def stream(self, *args, **kwargs):
+            with config_context(self.config):
+                yield from function(self, *args, **kwargs)
+        return stream
+    @wraps(function)
+    def call(self, *args, **kwargs):
+        with config_context(self.config):
+            return function(self, *args, **kwargs)
+    return call

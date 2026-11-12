@@ -14,7 +14,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from biomni.config import default_config
+from biomni.config import default_config, effective_config, task_configured
 from biomni.know_how import KnowHowLoader
 from biomni.llm import SourceType, get_llm
 from biomni.model.retriever import ToolRetriever
@@ -65,6 +65,10 @@ class A1:
         api_key: str | None = None,
         commercial_mode: bool | None = None,
         expected_data_lake_files: list | None = None,
+        runtime_profile=None,
+        protocol: str | None = None,
+        config=None,
+        load_datalake: bool = True,
     ):
         """Initialize the biomni agent.
 
@@ -79,6 +83,21 @@ class A1:
             commercial_mode: If True, excludes datasets that require commercial licenses or are non-commercial only
 
         """
+        # Per-instance settings never mutate the global or another user's model.
+        from copy import copy
+        default_config = config if config is not None else effective_config()
+        self.runtime_profile = None
+        if runtime_profile is not None:
+            from biomni.localenv import RuntimeProfile
+            self.runtime_profile = (RuntimeProfile.from_file(runtime_profile)
+                                    if isinstance(runtime_profile, (str, Path)) else runtime_profile)
+            if path is None:
+                path = self.runtime_profile.data_path
+            if timeout_seconds is None:
+                timeout_seconds = self.runtime_profile.timeout_seconds
+            load_datalake = False
+        if not load_datalake:
+            expected_data_lake_files = []
         # Use default_config values for unspecified parameters
         if path is None:
             path = default_config.path
@@ -96,6 +115,16 @@ class A1:
             api_key = default_config.api_key if default_config.api_key else "EMPTY"
         if commercial_mode is None:
             commercial_mode = default_config.commercial_mode
+        self.config = copy(default_config)
+        self.config.llm, self.config.source = llm, source
+        self.config.base_url, self.config.api_key = base_url, api_key
+        self.config.protocol = protocol if protocol is not None else default_config.protocol
+        self.config.path, self.config.timeout_seconds = path, timeout_seconds
+        if self.runtime_profile:
+            r_profiles = [env for env in self.runtime_profile.environments.values() if env.kind == "r"]
+            if r_profiles:
+                self.config.rscript_path = r_profiles[0].interpreter
+                self.config.r_library_paths = tuple(r_profiles[0].library_paths)
 
         # Import appropriate env_desc based on commercial_mode
         if commercial_mode:
@@ -123,7 +152,7 @@ class A1:
 
         # Show default config (database LLM)
         print("📋 DEFAULT CONFIG (Including Database LLM):")
-        config_dict = default_config.to_dict()
+        config_dict = self.config.to_dict()
         for key, value in config_dict.items():
             if value is not None:
                 # Special formatting for commercial_mode
@@ -142,7 +171,7 @@ class A1:
             if base_url is not None:
                 print(f"  Base URL: {base_url}")
             if api_key is not None and api_key != "EMPTY":
-                print(f"  API Key: {'*' * 8 + api_key[-4:] if len(api_key) > 8 else '***'}")
+                print("  API Key: [REDACTED]")
 
         print("=" * 50 + "\n")
 
@@ -193,6 +222,11 @@ class A1:
 
         self.path = os.path.join(path, "biomni_data")
         module2api = read_module2api()
+        if self.runtime_profile:
+            from biomni.localenv.integration import local_tools
+            module2api, self._custom_functions, self.local_tool_blockers = local_tools(module2api, self.runtime_profile)
+            self.library_content_dict = {env.id: f"Existing {env.kind} interpreter: {env.interpreter}"
+                                         for env in self.runtime_profile.environments.values()}
 
         self.llm = get_llm(
             llm,
@@ -200,7 +234,7 @@ class A1:
             source=source,
             base_url=base_url,
             api_key=api_key,
-            config=default_config,
+            config=self.config,
         )
         self.module2api = module2api
         self.use_tool_retriever = use_tool_retriever
@@ -1376,6 +1410,14 @@ Each library is listed with its description to help you understand its functiona
             custom_software=custom_software if custom_software else None,
             know_how_docs=know_how_docs if know_how_docs else None,
         )
+        if self.runtime_profile:
+            self.system_prompt += (
+                "\nLOCAL SERVER POLICY: Use search_local_capabilities and inspect_local_capability before selecting tools. "
+                "Metadata discovery is not workflow validation. Use explicit existing interpreters and shared R libraries. "
+                "Never install or upgrade packages, create environments, pull containers, or download reference/model files. "
+                "If a dependency is missing, stop that workflow and present reuse/install/defer choices for the user. "
+                "Use user-owned output files and record tool versions. Each task has a fresh namespace; use files for context."
+            )
 
         # Define the nodes
         def generate(state: AgentState) -> AgentState:
@@ -1477,6 +1519,14 @@ Each library is listed with its description to help you understand its functiona
             execute_match = re.search(r"<execute>(.*?)</execute>", last_message, re.DOTALL)
             if execute_match:
                 code = execute_match.group(1)
+                if self.runtime_profile:
+                    from biomni.localenv.adapters import require_no_install
+                    try:
+                        require_no_install(code)
+                    except PermissionError as exc:
+                        state["messages"].append(HumanMessage(content=str(exc)))
+                        state["next_step"] = "generate"
+                        return state
 
                 # Set timeout duration (10 minutes = 600 seconds)
                 timeout = self.timeout_seconds
@@ -1756,6 +1806,7 @@ Each library is listed with its description to help you understand its functiona
 
         return selected_resources_names
 
+    @task_configured
     def go(self, prompt):
         """Execute the agent with the given prompt.
 
@@ -1788,6 +1839,7 @@ Each library is listed with its description to help you understand its functiona
 
         return self.log, message.content
 
+    @task_configured
     def go_stream(self, prompt) -> Generator[dict, None, None]:
         """Execute the agent with the given prompt and return a generator that yields each step.
 
