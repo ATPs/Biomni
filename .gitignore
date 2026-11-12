@@ -52,6 +52,7 @@ bioagentos/task/lab_bench.py
 .history/
 node_modules/
 temp.*
+tests/
 
 scripts/analysis/all_tools.txt
 
