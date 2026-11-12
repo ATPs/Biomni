@@ -45,6 +45,17 @@ def terminate_descendants(signum, frame):
     raise SystemExit(128 + signum)
 
 
+def final_answer(log):
+    """Return the last <solution> block of an agent log, or the last message text."""
+    import re
+
+    for entry in reversed([str(item) for item in log]):
+        found = re.findall(r"<solution>(.*?)</solution>", entry, re.DOTALL)
+        if found:
+            return found[-1].strip()[:200000]
+    return (str(log[-1]) if log else "")[-200000:]
+
+
 def main():
     raw = sys.stdin.buffer.readline(8000001)
     if not raw or len(raw) > 8000000:
@@ -93,6 +104,7 @@ def main():
         "started",
         {"owner": spec.owner, "uid": os.getuid(), "actual_host": socket.gethostname(), "python": sys.executable},
     )
+    answer = ""
     try:
         if spec.command:
             from biomni.localenv.adapters import require_no_install
@@ -128,6 +140,7 @@ def main():
                     emit("progress", event)
                 result = getattr(agent, "log", [])
                 Path("result.txt").write_text(chr(10).join(map(str, result)))
+                answer = final_answer(result)
         atomic_json(
             Path("run-manifest.json"),
             {
@@ -142,7 +155,7 @@ def main():
                 "memory_gb": spec.memory_gb,
             },
         )
-        emit("completed", {"exit_code": 0})
+        emit("completed", {"exit_code": 0, "answer": answer})
         return 0
     except Exception as exc:
         emit("failed", {"message": str(exc)[:4000]})
