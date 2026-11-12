@@ -22,11 +22,6 @@ Repository = "https://github.com/snap-stanford/biomni"
 [project.optional-dependencies]
 gradio = ["gradio>=5.0,<6.0"]
 local-agent = ["pandas", "langchain-core", "langgraph", "requests", "tqdm"]
-local-server = ["tornado", "pamela", "cryptography"]
-
-[tool.setuptools.package-data]
-"biomni.server" = ["static/*.html", "static/*.js", "static/*.css"]
-
 [tool.setuptools]
 include-package-data = true
 

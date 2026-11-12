@@ -121,7 +121,11 @@ def main():
             from biomni.localenv import RuntimeProfile
 
             profile = RuntimeProfile.from_dict(spec.runtime_profile)
-            profile = replace(profile, data_path=str(directory / "data"))
+            # A shared, read-mostly reference folder (absolute data_path holding biomni_data/data_lake) is used
+            # as is; otherwise each job gets its own empty data folder.
+            shared = Path(profile.data_path)
+            if not (shared.is_absolute() and (shared / "biomni_data" / "data_lake").is_dir()):
+                profile = replace(profile, data_path=str(directory / "data"))
             if not credentials.get("gateway_url") or not token:
                 raise ValueError("Agent tasks require an admitted model connection")
             with contextlib.redirect_stdout(sys.stderr):
