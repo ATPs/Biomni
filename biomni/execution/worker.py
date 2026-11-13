@@ -24,7 +24,7 @@ def terminate_descendants(signum, frame):
         try:
             if path.stat().st_uid != os.getuid():
                 continue
-            fields = path.read_text().split(") ", 1)[1].split()
+            fields = path.read_text().rsplit(") ", 1)[1].split()
             candidates[int(path.parent.name)] = (int(fields[1]), fields[19])
         except (OSError, IndexError, ValueError):
             continue
@@ -36,7 +36,7 @@ def terminate_descendants(signum, frame):
     for sig in (signal.SIGTERM, signal.SIGKILL):
         for pid, ticks in descendants.items():
             try:
-                if Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[1].split()[19] == ticks:
+                if Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[19] == ticks:
                     os.kill(pid, sig)
             except (OSError, IndexError):
                 pass
@@ -79,7 +79,8 @@ def main():
         "uid": os.getuid(),
         "pid": os.getpid(),
         "host": socket.gethostname(),
-        "start_ticks": Path("/proc/self/stat").read_text().split(") ", 1)[1].split()[19],
+        "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        "start_ticks": Path("/proc/self/stat").read_text().rsplit(") ", 1)[1].split()[19],
     }
     atomic_json(directory / ".worker-identity.json", identity)
     credentials = envelope.get("task_credentials", {})

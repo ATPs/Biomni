@@ -16,12 +16,12 @@ object on stdout. Exit codes: 0 success, 2 invalid request, 3 busy (not enough h
 import argparse
 import json
 import os
-from pathlib import Path
 import pwd
 import signal
 import socket
 import sys
 import time
+from pathlib import Path
 
 EXIT_OK, EXIT_INVALID, EXIT_BUSY, EXIT_UNCONFIRMED = 0, 2, 3, 4
 
@@ -32,7 +32,7 @@ class Unconfirmed(Exception):
 
 def _job_folder(path, job_id):
     folder = Path(path)
-    if not folder.is_absolute() or folder.is_symlink() or not folder.is_dir():
+    if not folder.is_absolute() or any(p.is_symlink() for p in (folder, *folder.parents)) or not folder.is_dir():
         raise ValueError("Job folder must be an existing absolute directory")
     if folder.stat().st_uid != os.getuid():
         raise PermissionError("Job folder belongs to another account")
@@ -44,28 +44,43 @@ def _job_folder(path, job_id):
 
 def _proc_fields(pid):
     with open(f"/proc/{pid}/stat") as handle:
-        return handle.read().split(") ", 1)[1].split()
+        return handle.read().rsplit(") ", 1)[1].split()
 
 
 def worker_alive(identity):
     """True only for the same host, UID, PID and start time, and not a zombie."""
     if identity.get("host") not in (None, socket.gethostname()):
         raise Unconfirmed("Worker ran on a different host")
-    pid = int(identity["pid"])
     try:
+        if (
+            identity.get("boot_id")
+            and identity["boot_id"] != Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        ):
+            return False
+        pid = int(identity["pid"])
+        if pid <= 1:
+            raise ValueError("Invalid worker PID")
         fields = _proc_fields(pid)
-        return (os.stat(f"/proc/{pid}").st_uid == os.getuid() and fields[19] == identity["start_ticks"]
-                and fields[0] not in ("Z", "X"))
-    except (OSError, IndexError):
+        return (
+            os.stat(f"/proc/{pid}").st_uid == os.getuid()
+            and fields[19] == identity["start_ticks"]
+            and fields[0] not in ("Z", "X")
+        )
+    except (FileNotFoundError, ProcessLookupError):
         return False
+    except (OSError, IndexError, KeyError, ValueError, TypeError):
+        raise Unconfirmed("Worker process state could not be verified") from None
 
 
 def worker_identity(folder, job_id):
     path = folder / ".worker-identity.json"
-    if not path.exists():
+    try:
+        identity = json.loads(path.read_text())
+    except FileNotFoundError:
         return None
-    identity = json.loads(path.read_text())
-    if identity.get("job_id") != job_id or identity.get("uid") != os.getuid():
+    except (OSError, ValueError):
+        raise Unconfirmed("Worker identity could not be read") from None
+    if not isinstance(identity, dict) or identity.get("job_id") != job_id or identity.get("uid") != os.getuid():
         raise Unconfirmed("Worker identity mismatch")
     return identity
 
@@ -80,9 +95,12 @@ def cancel(folder, job_id, *, grace=5.0):
     if identity is None or not worker_alive(identity):
         return {"state": "absent", "host": socket.gethostname()}
     pid = int(identity["pid"])
-    if os.getpgid(pid) != pid:
-        raise Unconfirmed("Worker is not its own process-group leader")
-    os.killpg(pid, signal.SIGTERM)  # The worker also terminates detached descendants on SIGTERM.
+    try:
+        if os.getpgid(pid) != pid:
+            raise Unconfirmed("Worker is not its own process-group leader")
+        os.killpg(pid, signal.SIGTERM)  # The worker also terminates detached descendants on SIGTERM.
+    except ProcessLookupError:
+        return {"state": "absent", "host": socket.gethostname()}
     deadline = time.monotonic() + grace
     while time.monotonic() < deadline and worker_alive(identity):
         time.sleep(0.2)
@@ -105,8 +123,15 @@ def preflight(folder, job_id, *, inputs=(), cpus=1, memory_gb=4.0):
     with open("/proc/meminfo") as handle:
         available = next(int(line.split()[1]) / 1024**2 for line in handle if line.startswith("MemAvailable:"))
     load, threads = os.getloadavg()[0], os.cpu_count() or 1
-    evidence = {"host": socket.gethostname(), "user": user.pw_name, "uid": user.pw_uid, "memory_gb": round(available, 1),
-                "load": round(load, 2), "cpus": threads, "python": sys.executable}
+    evidence = {
+        "host": socket.gethostname(),
+        "user": user.pw_name,
+        "uid": user.pw_uid,
+        "memory_gb": round(available, 1),
+        "load": round(load, 2),
+        "cpus": threads,
+        "python": sys.executable,
+    }
     evidence["ok"] = available * 0.90 >= memory_gb and threads * 0.85 - load >= cpus
     return evidence
 
@@ -115,9 +140,11 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["run"]:
         from .worker import main as worker_main
+
         return worker_main()
-    parser = argparse.ArgumentParser(prog="python -m biomni.execution.cli", description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        prog="python -m biomni.execution.cli", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("run", help="run the worker (envelope on stdin)")
     for name in ("preflight", "probe", "cancel"):
