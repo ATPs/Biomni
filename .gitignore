@@ -53,6 +53,11 @@ bioagentos/task/lab_bench.py
 node_modules/
 temp.*
 tests/
+# Retain the reviewed upstream OpenFDA regression tests.
+!/tests/
+/tests/*
+!/tests/test_fda_outcome_statistics.py
+!/tests/test_openfda_direct_parameters.py
 
 scripts/analysis/all_tools.txt
 
